@@ -39,11 +39,8 @@ async fn main() -> Result<()> {
         }
 
         while let Some(del) = del_list.pop() {
-            println!("deleting {:?}", del);
             users.remove(&del);
         }
-
-        println!("{:?}", users);
 
         if buf[size - 1] == b'\n' {
             println!(

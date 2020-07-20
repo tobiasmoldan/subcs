@@ -1,10 +1,9 @@
 [package]
-name = "udpchat_server"
+name = "subcs"
 version = "0.1.0"
 authors = ["Tobias Moldan <tobias.moldan@gmail.com>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Simple UDP Broadcast Chat Server"
 
 [dependencies]
 async-std = { version = "1.6", features = ["attributes"] }
