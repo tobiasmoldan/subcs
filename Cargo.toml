@@ -1,10 +1,13 @@
 [package]
 name = "subcs"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Tobias Moldan <tobias.moldan@gmail.com>"]
 edition = "2018"
 description = "Simple UDP Broadcast Chat Server"
 
 [dependencies]
-async-std = { version = "1.6", features = ["attributes"] }
 anyhow = "1"
+
+[dependencies.tokio]
+version = "0.2"
+features = ["rt-core", "udp", "sync", "rt-threaded", "time", "signal", "macros"]
