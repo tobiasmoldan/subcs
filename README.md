@@ -12,7 +12,7 @@ The executable can then be found at `./target/release/subcs`
 
 ## Run
 
-Either run `./subcs` or as container `docker -d -p 8000:8000/udp tobiasmoldan/subcs:v0.2.0`
+Either run `./subcs` or as container `docker --init -d -p 8000:8000/udp tobiasmoldan/subcs:v0.2.0`
 
 ## License
 
