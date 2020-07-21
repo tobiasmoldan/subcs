@@ -1,63 +1,127 @@
 use anyhow::Result;
-use async_std::net::{SocketAddr, UdpSocket};
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::str::from_utf8;
-use std::time::{Duration, Instant};
+use std::collections::{
+    hash_map::Entry::{Occupied, Vacant},
+    HashMap,
+};
+use std::net::{Ipv4Addr, SocketAddr};
+use tokio::net::UdpSocket;
+use tokio::sync::{broadcast, mpsc};
+use tokio::time::{delay_for, Duration, Instant};
+use tokio::signal;
 
-#[async_std::main]
+#[tokio::main]
 async fn main() -> Result<()> {
-    let socket = UdpSocket::bind("0.0.0.0:8000").await?;
+    let socket = UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), 8000)).await?;
 
-    let mut buf = [0u8; 4096];
+    let (mut udp_rx, mut udp_tx) = socket.split();
 
-    let mut users = HashMap::<SocketAddr, Instant>::new();
-    let mut del_list = Vec::new();
+    let (exit_tx, mut exit_rx1) = broadcast::channel::<()>(1);
+    let mut exit_rx2 = exit_tx.subscribe();
+    let mut exit_rx3 = exit_tx.subscribe();
 
-    const MIN_DUR: Duration = Duration::from_millis(333);
-    const MAX_DUR: Duration = Duration::from_secs(300);
+    let (mut out_tx, mut out_rx) = mpsc::channel::<(Vec<SocketAddr>, Vec<u8>)>(100);
+    let (mut in_tx, mut in_rx) = mpsc::channel::<(SocketAddr, Vec<u8>)>(10);
 
-    while let Ok((size, addr)) = socket.recv_from(&mut buf).await {
-        match users.entry(addr) {
-            Entry::Vacant(v) => {
-                v.insert(Instant::now());
-            }
-            Entry::Occupied(mut o) => {
-                *o.get_mut() = Instant::now();
-            }
-        }
+    let rec = tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
 
-        for (k, v) in users.iter() {
-            if k == &addr {
-                continue;
-            }
-            if v.elapsed() > MAX_DUR {
-                del_list.push(k.clone());
-            } else if v.elapsed() >= MIN_DUR {
-                socket.send_to(&buf[..size], k).await?;
+        loop {
+            tokio::select! {
+                Ok(_) = exit_rx2.recv() => {
+                    break;
+                },
+                Ok((size, addr)) = udp_rx.recv_from(&mut buf) => {
+                    let mut vec = Vec::<u8>::with_capacity(size);
+                    vec.extend_from_slice(&buf[..size]);
+                    in_tx.send((addr, vec)).await.unwrap();
+                }
             }
         }
+    });
 
-        while let Some(del) = del_list.pop() {
-            users.remove(&del);
-        }
+    let timeouts = tokio::spawn(async move {
+        let mut connections = HashMap::<SocketAddr, Instant>::new();
+        let mut del_list = Vec::<SocketAddr>::new();
 
-        if buf[size - 1] == b'\n' {
-            println!(
-                "{}:{}> {}",
-                addr.ip(),
-                addr.port(),
-                from_utf8(&buf[..size - 1])?
-            );
-        } else {
-            println!(
-                "{}:{}> {}",
-                addr.ip(),
-                addr.port(),
-                from_utf8(&buf[..size])?
-            );
+        const MIN_TIME_DIFF: Duration = Duration::from_millis(333);
+        const MAX_TIME_DIFF: Duration = Duration::from_secs(180);
+        loop {
+            tokio::select! {
+                Ok(_) = exit_rx3.recv() => {
+                    in_rx.close();
+                },
+                res = in_rx.recv() => {
+                    match res {
+                        None => {
+                            break;
+                        },
+                        Some((addr, data)) => {
+
+                            match connections.entry(addr) {
+                                Occupied(mut o) => {
+                                    if o.get().elapsed() < MIN_TIME_DIFF {
+                                        continue;
+                                    }
+                                    *o.get_mut() = Instant::now();
+                                },
+                                Vacant(v) => {
+                                    v.insert(Instant::now());
+                                }
+                            }
+
+                            let mut addrs = Vec::new();
+
+                            for (k,v) in connections.iter() {
+                                let passed = v.elapsed();
+
+                                if passed > MAX_TIME_DIFF {
+                                    del_list.push(k.clone());
+                                } else if k != &addr {
+                                    addrs.push(k.clone());
+                                }
+                            }
+
+                            while let Some(k) = del_list.pop() {
+                                connections.remove(&k);
+                            }
+
+                            out_tx.send((addrs, data)).await.unwrap();
+                        }
+                    }
+                }
+            }
         }
-    }
+    });
+
+    let send = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                Ok(_) = exit_rx1.recv() => {
+                    out_rx.close();
+                },
+                res = out_rx.recv() => {
+                    match res {
+                        None => {
+                            break;
+                        },
+                        Some((addrs, data)) => {
+                            for addr in addrs.iter() {
+                                udp_tx.send_to(data.as_slice(), addr).await.unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    signal::ctrl_c().await?; 
+
+    exit_tx.send(()).unwrap();
+
+    rec.await?;
+    timeouts.await?;
+    send.await?;
 
     Ok(())
 }
